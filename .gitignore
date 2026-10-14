@@ -1,0 +1,52 @@
+# ==============================================================================
+# Model Checkpoints & Large Binary Weights
+# ==============================================================================
+*.pth
+*.pt
+*.bin
+*.ckpt
+*.onnx
+
+# Keep lightweight category prototypes dictionary (~1MB)
+!weights/category_prototypes.pth
+
+# Large pre-trained backbones
+weights/dinov2_vitb14_pretrain.pth
+
+# ==============================================================================
+# Training & Synthesized Image Outputs
+# ==============================================================================
+outputs/
+
+# ==============================================================================
+# Python Runtime & Caching
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments & Package builds
+.env
+.venv
+env/
+venv/
+build/
+dist/
+*.egg-info/
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# System Logs & Archives
+*.log
+*.tar
+*.tar.gz
+*.zip

@@ -1,0 +1,111 @@
+# ==============================================================================
+# DinoSeaS: Unified Multi-Class Anomaly Synthesis & Detection Configuration
+# ==============================================================================
+experiment:
+  name: "DinoSeaS_MVTec_MultiClass_Unified"
+  seed: 42
+  precision: "fp16"
+  image_size: 512
+  vit_input_size: 448          # 448 / 14 = 32x32 patch grid (N = 1024 patches)
+  num_classes: 15              # All 15 MVTec-AD categories in one unified model
+  data_path: "/home/lablee/AD/mvtec_data"
+  output_dir: "/home/lablee/AD/DinoSeaS/outputs"
+
+backbones:
+  diffusion_model_id: "runwayml/stable-diffusion-v1-5"
+  dinov2_model_id: "facebook/dinov2-base"
+  local_dinov2_checkpoint: "/home/lablee/AD/DinoSeaS/weights/dinov2_vitb14_pretrain.pth"
+  freeze_vae: true
+  freeze_dinov2: true
+  freeze_clip_backbone: true
+
+# ------------------------------------------------------------------------------
+# 1. Dinomaly2 Sub-Module (CAR + Noisy Bottleneck + Loose Group Evaluator)
+# ------------------------------------------------------------------------------
+dinomaly2:
+  embed_dim: 768
+  num_patches: 1024            # 32 x 32 spatial resolution
+  car_enabled: true            # Context-Aware Recentering: f_patch - f_cls
+  
+  noisy_bottleneck:
+    num_layers: 3              # L_b = 3 MLP layers
+    hidden_dim: 768
+    dropout_prob: 0.3          # Bernoulli(1 - p) mask rate for identity suppression
+    activation: "gelu"
+
+  loose_groups:
+    group_1_shallow: [2, 3, 4, 5]   # 0-indexed layers {3, 4, 5, 6} -> Geometric (S_1)
+    group_2_deep: [6, 7, 8, 9]      # 0-indexed layers {7, 8, 9, 10} -> Semantic (S_2)
+  
+  decoder:
+    num_layers_per_group: 4
+    num_heads: 8
+    attention_type: "linear_elu"    # phi(x) = ELU(x) + 1 low-pass filter
+
+  loss_modulation:
+    hard_mining_quantile: 0.90      # tau_k: 90th percentile in batch
+    stop_grad_scale: 0.10           # sg_0.1(.) reduces outlier gradient to 10%
+    anomaly_top_z_percent: 0.01     # Top 1% pixels for image-level score s_image
+
+# ------------------------------------------------------------------------------
+# 2. SeaS Sub-Module (UA Prompt + Hybrid U-Net + CAR-MRM Branch)
+# ------------------------------------------------------------------------------
+seas:
+  prompt_design:
+    num_ob_tokens: 1                # <ob> continuous class anchor token
+    num_df_tokens_per_defect: 4     # <df_1>, <df_2>, <df_3>, <df_4>
+    df_bottleneck_dropout: 0.25     # Noisy Bottleneck B_df on defect tokens
+    template: "a <ob> with <df1> <df2> <df3> <df4>"
+
+  hybrid_attention:
+    ob_mode: "linear"               # Unfocused Linear Attention for <ob>
+    df_mode: "softmax"              # Focused Softmax Attention for <df>
+    record_resolutions: [16, 32, 64]
+    heads: 8
+    dim_head: 64
+
+  rmp_branch:
+    unet_up2_channels: 1280         # 32 x 32
+    unet_up3_channels: 640          # 64 x 64
+    compressed_channels: 96         # After 1x1 Conv (96 + 96 = 192)
+    transformer_dim: 192
+    transformer_layers: 4
+    transformer_heads: 6
+    vae_res_channels: [512, 512, 256]  # Resolutions: 128x128 (512), 256x256 (512), 512x512 (256)
+    mrm_hidden_channels: [128, 64, 32]
+    num_mask_classes: 2             # Binary Softmax output: (512, 512, 2)
+
+# ------------------------------------------------------------------------------
+# 3. Unified Optimization & Loss Hyperparameters
+# ------------------------------------------------------------------------------
+training:
+  batch_size: 2                     # 2 pairs per step with real Stable Diffusion v1-5 (uses ~17.6GB VRAM)
+  max_steps: 15000
+  phase1_evaluator_steps: 5000
+  tweedie_max_timestep: 600         # Apply L_GDCR & RMP when t <= 600 (clean signal)
+  gradient_accumulation_steps: 2    # Effective batch size = 2
+  clip_grad_norm: 1.0
+  save_every: 1000
+  eval_every: 1000
+  
+  optimizer:
+    lr_unet_attention: 1.0e-5
+    lr_prompt_tokens: 5.0e-4
+    lr_rmp_branch: 1.0e-4
+    lr_dinomaly2_decoder: 2.0e-4    # For Phase 1 pre-training of evaluator
+    weight_decay: 1.0e-2
+
+  loss_weights:
+    lambda_sd_df: 1.0               # Diffusion noise loss on defective stream
+    lambda_sd_ob: 1.0               # Diffusion noise loss on normal stream
+    lambda_da: 0.5                  # Decoupled Anomaly Alignment Loss (L_DA)
+    eta_1_mask_focal: 2.0           # RMP Focal Loss weight (L_M)
+    eta_2_gdcr: 0.25                # Dinomaly2 Manifold Loss weight (L_GDCR)
+    
+  gdcr_control:
+    lambda_1_geometric: 1.5         # Weight for Group 1 (S_1: surface/texture flaws)
+    lambda_2_semantic: 1.0          # Weight for Group 2 (S_2: structural/logical flaws)
+    margin_gamma_1: 0.35            # Target cosine anomaly margin in Group 1
+    margin_gamma_2: 0.45            # Target cosine anomaly margin in Group 2
+    focal_alpha: 0.25
+    focal_gamma: 2.0
